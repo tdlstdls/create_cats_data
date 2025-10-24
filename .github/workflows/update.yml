@@ -1,0 +1,47 @@
+name: Daily Data Update
+
+on:
+  # 毎日午前1時 UTC（日本時間の午前10時）に実行
+  schedule:
+    - cron: '0 1 * * *' 
+  # 手動で実行できるようにする
+  workflow_dispatch:
+
+jobs:
+  run-update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 👈 更新したファイルをプッシュするために必要
+      
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 全履歴を取得することで、コミットを可能にする
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20' # package.jsonと互換性のあるバージョン
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run Data Update Script
+        # 作成した単体スクリプトを実行
+        run: node update_events.js 
+
+      - name: Commit and Push changes
+        run: |
+          # 変更がなければコミットをスキップ
+          if [[ -z "$(git status -s)" ]]; then
+            echo "No changes found. Skipping commit."
+            exit 0
+          fi
+          
+          # 変更があった場合のみコミットとプッシュ
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add . # 変更された data/events.js をステージング
+          git commit -m "feat(data): Automated data refresh"
+          git push
