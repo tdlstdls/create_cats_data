@@ -9,6 +9,22 @@ const yaml = require('js-yaml');
 const app = express();
 const port = 3000;
 
+// gt_list.jsを読み込んでマップを作成
+const gtListPath = path.join(__dirname, 'gt_list.js');
+const gtListContent = fs.readFileSync(gtListPath, 'utf8');
+const gt_map = new Map();
+// gt_list.jsの中身を解析してマップに格納
+const gt_list_string = gtListContent.substring(gtListContent.indexOf('[') + 1, gtListContent.lastIndexOf(']'));
+const gt_list_array = gt_list_string.split('\r\n').filter(line => line.trim()).map(line => line.trim().replace(/'/g, '').replace(/,$/, ''));
+gt_list_array.forEach(item => {
+    const parts = item.split(',');
+    if (parts.length >= 2) {
+        const id = parseInt(parts[0], 10);
+        const name = parts.slice(1).join(',');
+        gt_map.set(id, name);
+    }
+});
+
 // 外部データのURL
 const externalUrl = 'https://gitlab.com/godfat/battle-cats-rolls/-/raw/master/build/bc-jp.yaml';
 
@@ -34,7 +50,7 @@ app.get('/api/create-cats-js', async (req, res) => {
         }));
 
         const jsContent = `const cats = ${JSON.stringify(catsArray, null, 2)};`;
-        const jsPath = path.join(__dirname, 'cats.js');
+                const jsPath = path.join(__dirname, 'data', 'cats.js');
         fs.writeFileSync(jsPath, jsContent, 'utf8');
 
         res.status(200).send('cats.js が正常に作成されました。');
@@ -59,7 +75,7 @@ app.get('/api/create-gacha-js', async (req, res) => {
 
             const currentGacha = {
                 id: currentId,
-                name: gachaData.name,
+                name: gt_map.get(seriesId) || gachaData.name,
                 cats: gachaData.cats
             };
 
@@ -70,9 +86,15 @@ app.get('/api/create-gacha-js', async (req, res) => {
 
         const gachaArray = Object.values(latestGachas);
 
-        const jsContent = `const gacha = ${JSON.stringify(gachaArray, null, 2)};`;
-        const jsPath = path.join(__dirname, 'gacha.js');
-        fs.writeFileSync(jsPath, jsContent, 'utf8');
+        let jsContent = JSON.stringify(gachaArray, null, 2);
+        // cats配列のインデントを削除
+        jsContent = jsContent.replace(/(\n\s+\[\n)([\s\S]*?)(\n\s+\])/g, (match, start, content, end) => {
+            const oneLineContent = content.replace(/\s+/g, ' ').trim();
+            return `[${oneLineContent}]`;
+        });
+
+        const jsPath = path.join(__dirname, 'data', 'gacha.js');
+        fs.writeFileSync(jsPath, `const gacha = ${jsContent};`, 'utf8');
 
         res.status(200).send('gacha.js が正常に作成されました (重複は除外されました)。');
     } catch (e) {
@@ -97,7 +119,7 @@ app.get('/api/create-events-js', async (req, res) => {
                 oldestEvents[eventId] = {
                     key: dateStr,
                     id: eventData.id,
-                    name: eventData.name,
+                    name: gt_map.get(eventId) || eventData.name,
                     rare: eventData.rare,
                     supa: eventData.supa,
                     uber: eventData.uber,
@@ -110,7 +132,7 @@ app.get('/api/create-events-js', async (req, res) => {
         const eventsArray = Object.values(oldestEvents);
 
         const jsContent = `const events = ${JSON.stringify(eventsArray, null, 2)};`;
-        const jsPath = path.join(__dirname, 'events.js');
+                const jsPath = path.join(__dirname, 'data', 'events.js');
         fs.writeFileSync(jsPath, jsContent, 'utf8');
 
         res.status(200).send('events.js が正常に作成されました (重複は除外されました)。');
