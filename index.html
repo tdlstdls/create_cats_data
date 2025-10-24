@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>ガチャシミュレーター (ローカルデータ版)</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        #controls label, #controls input, #controls select, #controls button { margin-right: 10px; }
+        #result { margin-top: 20px; border: 1px solid #ccc; padding: 10px; white-space: pre-wrap; }
+        .error { color: red; font-weight: bold; }
+    </style>
+    </head>
+<body>
+    <h1>ガチャシミュレーター</h1>
+
+    <div id="controls">
+        <label for="seed">開始前SEED値 (32bit整数):</label>
+        <input type="number" id="seed" value="12345" min="1" max="4294967295">
+        
+        <label for="gachaSelect">ガチャ選択:</label>
+        <select id="gachaSelect">
+            <option value="">データをロード中...</option>
+        </select>
+        
+        <label for="rolls">回数:</label>
+        <input type="number" id="rolls" value="10" min="1" max="1000">
+        
+        <button onclick="startSimulation()">ガチャを引く</button>
+    </div>
+
+    <div id="result">
+        <p>シミュレーション結果がここに表示されます。</p>
+    </div>
+
+    <script>
+        // グローバル変数
+        // ★★★ 抽出後の新しいデータを直接埋め込みます ★★★
+        let gachaMasterData = {};
+        const dataFiles = ['data/cats.js', 'data/events.js', 'data/gacha.js'];
+        
+        async function loadAndProcessData() {
+            const loadedData = {};
+            for (const file of dataFiles) {
+                const response = await fetch(file);
+                const text = await response.text();
+                const data = JSON.parse(text.substring(text.indexOf('[') - 1, text.lastIndexOf(']') + 1));
+                loadedData[file.split('/')[1].split('.')[0]] = data;
+            }
+
+            const rarityMap = {
+                0: "nomal", 1: "ex", 2: "rare", 3: "super", 4: "uber", 5: "legend"
+            };
+
+            const catsMaster = {};
+            for (const cat of loadedData.cats) {
+                catsMaster[cat.id] = { ...cat, rarity: rarityMap[cat.rarity] || "rare" };
+            }
+
+            const eventsMaster = {};
+            for (const event of loadedData.events) {
+                eventsMaster[event.id] = event;
+            }
+
+            const gachasMaster = {};
+            for (const gacha of loadedData.gacha) {
+                const eventInfo = eventsMaster[gacha.id];
+                if (!eventInfo) continue;
+
+                const pool = { rare: [], super: [], uber: [], legend: [] };
+                if (gacha.cats) {
+                    for (const catId of gacha.cats) {
+                        const catInfo = catsMaster[catId];
+                        if (catInfo && pool[catInfo.rarity]) {
+                            pool[catInfo.rarity].push({ id: catInfo.id, name: catInfo.name });
+                        }
+                    }
+                }
+
+                gachasMaster[gacha.id] = {
+                    id: gacha.id.toString(),
+                    name: eventInfo.name || gacha.name || `ガチャID: ${gacha.id}`,
+                    rarity_rates: {
+                        rare: eventInfo.rare || 0,
+                        super: eventInfo.supa || 0,
+                        uber: eventInfo.uber || 0,
+                        legend: eventInfo.legend || 0
+                    },
+                    pool: pool
+                };
+            }
+
+            gachaMasterData = {
+                cats: catsMaster,
+                gachas: gachasMaster,
+                events: loadedData.events.reduce((acc, event) => {
+                    acc[event.key] = event;
+                    return acc;
+                }, {})
+            };
+
+            populateGachaSelect();
+            document.getElementById('result').innerHTML = '<p>✅ マスタデータロード完了 (外部ファイル)。</p>';
+        }
+        // 実際のシミュレーターロジックに必要なのは "gachas" 内の "rarity_rates" と "pool" です。
+        // events と cats のトップレベルデータは、このシミュレーターのロール関数では使用されません。
+        
+        // 前回引いたキャラの情報 (S2のレア被り再抽選用)
+        let lastDraw = {
+            rarity: null,
+            charId: null
+        };
+        
+        // ===========================================
+        // 1. Xorshift32 の実装 (変更なし)
+        // ===========================================
+
+        /**
+         * Xorshift32クラス
+         * @param {number} seed 開始前SEED値
+         */
+        class Xorshift32 {
+            constructor(seed) {
+                // 32bitの符号なし整数として扱う (>>> 0)
+                this.seed = (seed >>> 0) || 1; // 0の場合は1に設定 (Xorshiftは0だと固定されるため)
+            }
+
+            /**
+             * 次の32bit整数を生成し、内部SEEDを更新
+             * @returns {number} 32bit符号なし整数
+             */
+            next() {
+                let x = this.seed;
+                // Xorshift32アルゴリズム
+                // t = x ^ (x << 13)
+                x ^= (x << 13);
+                // t = x ^ (x >>> 17)
+                x ^= (x >>> 17);
+                // t = x ^ (x << 15)
+                x ^= (x << 15);
+                
+                // 32bit符号なし整数として保存
+                this.seed = x >>> 0;
+                return this.seed;
+            }
+        }
+
+
+        // ===========================================
+        // 2. マスタデータ (インラインJSON) のロード
+        // ===========================================
+
+
+        /**
+         * ロードしたデータからガチャ選択ドロップダウンを生成 (変更なし)
+         */
+        function populateGachaSelect() {
+            const select = document.getElementById('gachaSelect');
+            select.innerHTML = ''; // 一度クリア
+
+            if (gachaMasterData && gachaMasterData.gachas) {
+                for (const gachaId in gachaMasterData.gachas) {
+                    const gacha = gachaMasterData.gachas[gachaId];
+                    const option = document.createElement('option');
+                    option.value = gachaId;
+                    option.textContent = gacha.name || `ガチャID: ${gachaId}`;
+                    select.appendChild(option);
+                }
+            } else {
+                 select.innerHTML = '<option value="">ガチャデータが見つかりません</option>';
+            }
+        }
+
+
+        // ===========================================
+        // 3. シミュレーションロジック (変更なし)
+        // ===========================================
+        
+        /**
+         * 1ロールのシミュレーションを実行
+         * @param {Xorshift32} rng Xorshift32インスタンス
+         * @param {string} gachaId 選択されたガチャID
+         * @returns {{result: string, rarity: string, charId: number}} 抽選結果と消費SEED数
+         */
+        function roll(rng, gachaId) {
+            if (!gachaMasterData || !gachaMasterData.gachas || !gachaMasterData.gachas[gachaId]) {
+                throw new Error("無効なガチャIDです。");
+            }
+            const gachaConfig = gachaMasterData.gachas[gachaId];
+            let resultText = "";
+            let currentRarity = null;
+            let currentCharacter = null;
+            let seedConsumption = 0;
+            let charIndex = -1;
+
+            // --- S0: レアリティ判定 ---
+            const s0_seed = rng.next(); seedConsumption++;
+            const rarityRoll = s0_seed % 10000; // 0-9999
+            resultText += `S0(レアリティ判定): SEED=${s0_seed}\n`;
+            resultText += `  計算式: ${s0_seed} % 10000 = ${rarityRoll}\n`;
+            
+            let cumulativeRate = 0;
+            const rarityRates = gachaConfig.rarity_rates || {}; 
+            const rarityOrder = ['rare', 'super', 'uber', 'legend']; // 変更点: レアリティのチェック順を逆に
+            
+            for (const rarityKey of rarityOrder) {
+                const rate = rarityRates[rarityKey];
+                if (rate !== undefined) {
+                    cumulativeRate += rate;
+                    resultText += `  チェック: ${rarityRoll} < ${cumulativeRate} (${rarityKey}率: ${rate}) -> `;
+                    if (rarityRoll < cumulativeRate) {
+                        currentRarity = rarityKey;
+                        resultText += `成立\n`;
+                        break;
+                    }
+                    resultText += `不成立\n`;
+                }
+            }
+            
+            if (!currentRarity) {
+                // このロジックでは、すべてのレートの合計が10000であれば、ここには到達しないはず
+                // 万が一レート設定が不完全な場合、残ったものが伝説レア等になる可能性があるため、
+                // フォールバック先を最も出やすいレアにするか、あるいはエラーにするか検討が必要。
+                // ここでは、何もヒットしなかった場合は最後のレアリティ（legend）に割り当てるのが適切かもしれない。
+                // ただし、現在の実装では rarityOrder の最後は legend なので、
+                // ループが完了した場合、currentRarity は null のまま。
+                // 安全のため、デフォルトを'rare'にしておく。
+                currentRarity = 'rare';
+            }
+            resultText += `  結果: Rarity=${currentRarity}\n`;
+
+            const characterPool = gachaConfig.pool[currentRarity] || []; 
+            const totalChars = characterPool.length;
+
+            if (totalChars === 0) {
+                 resultText += `該当レアリティ(${currentRarity})のキャラがプールにありません。\n`;
+                 return { result: resultText, detailedText: resultText, rarity: currentRarity, charId: null, seedConsumption: seedConsumption, charIndex: -1 };
+            }
+            
+            // --- S1: キャラ判定 ---
+            const s1_seed = rng.next(); seedConsumption++;
+            charIndex = s1_seed % totalChars;
+            currentCharacter = characterPool[charIndex];
+            resultText += `S1(キャラ判定): SEED=${s1_seed}\n`;
+            resultText += `  計算式: ${s1_seed} % ${totalChars} = ${charIndex}\n`;
+            resultText += `  結果: Character=${currentCharacter.name || currentCharacter.id}\n`;
+
+            // --- S2: レア被り再抽選 (レアリティが'rare'で、前回と同じキャラの場合) ---
+            if (currentRarity === 'rare' && lastDraw.rarity === 'rare' && lastDraw.charId === currentCharacter.id) {
+                
+                const uniqueRareChars = characterPool.filter(c => c.id !== lastDraw.charId);
+                const uniqueTotal = uniqueRareChars.length;
+
+                if (uniqueTotal > 0) {
+                    const s2_seed = rng.next(); seedConsumption++;
+                    const reRollIndex = s2_seed % uniqueTotal;
+                    currentCharacter = uniqueRareChars[reRollIndex];
+                    resultText += `S2(レア被り再抽選): SEED=${s2_seed} (SEEDをさらに消費)\n`;
+                    resultText += `  計算式: ${s2_seed} % ${uniqueTotal} = ${reRollIndex}\n`;
+                    resultText += `  結果: New Character=${currentCharacter.name || currentCharacter.id}\n`;
+                } else {
+                    resultText += "S2(レア被り再抽選): 再抽選可能なキャラがありませんでした。\n";
+                }
+            }
+
+            lastDraw.rarity = currentRarity;
+            lastDraw.charId = currentCharacter.id;
+
+            const finalResult = `${currentRarity} : ${currentCharacter.name || currentCharacter.id}`;
+
+            return { result: finalResult, detailedText: resultText, rarity: currentRarity, charId: currentCharacter.id, seedConsumption: seedConsumption, charIndex: charIndex };
+        }
+
+        /**
+         * シミュレーションの開始と結果の表示 (変更あり)
+         */
+        function startSimulation() {
+            if (!gachaMasterData) {
+                document.getElementById('result').innerHTML = '<p class="error">エラー: マスタデータがロードされていません。</p>';
+                return;
+            }
+            
+            const initialSeed = parseInt(document.getElementById('seed').value, 10);
+            const selectedGachaId = document.getElementById('gachaSelect').value;
+            const numRolls = parseInt(document.getElementById('rolls').value, 10);
+            
+            if (isNaN(initialSeed) || initialSeed <= 0) {
+                 document.getElementById('result').innerHTML = '<p class="error">エラー: 有効な初期SEED値を入力してください。</p>';
+                 return;
+            }
+            
+            if (!selectedGachaId) {
+                document.getElementById('result').innerHTML = '<p class="error">エラー: ガチャを選択してください。</p>';
+                return;
+            }
+
+            const gachaConfig = gachaMasterData.gachas[selectedGachaId];
+            let output = `--- ${gachaConfig.name} のプール ---\n`;
+            const rarityOrder = ['legend', 'uber', 'super', 'rare'];
+            for(const rarity of rarityOrder) {
+                output += `** ${rarity} **\n`;
+                const characterPool = gachaConfig.pool[rarity] || [];
+                characterPool.forEach((char, index) => {
+                    output += `スロット ${index}: ${char.name}\n`;
+                });
+                output += `\n`;
+            }
+
+            output += `--- シミュレーション開始 ---\n`;
+            output += `開始前SEED: ${initialSeed}\n`;
+            output += `選択ガチャID: ${selectedGachaId}\n\n`;
+
+            const rng = new Xorshift32(initialSeed);
+
+            lastDraw = { rarity: null, charId: null };
+
+            for (let i = 0; i < numRolls; i++) {
+                try {
+                    const currentSeedBeforeRoll = rng.seed;
+                    const rollResult = roll(rng, selectedGachaId);
+                    
+                    output += `[${i + 1}回目 ロール] (開始前SEED: ${currentSeedBeforeRoll})\n`;
+                    output += rollResult.detailedText; // Display detailed text
+                    output += `最終結果: ${rollResult.result}\n`;
+                    output += `スロット: ${rollResult.charIndex}\n`;
+                    output += `消費SEED数: ${rollResult.seedConsumption} (最終SEED: ${rng.seed})\n`;
+                    output += `\n`;
+
+                } catch (e) {
+                    output += `エラー: ${e.message}\n`;
+                    break;
+                }
+            }
+            
+            output += `--- シミュレーション終了 ---\n`;
+            output += `最終SEED: ${rng.seed}`;
+
+            document.getElementById('result').textContent = output;
+        }
+
+
+        // ページロード時にマスタデータをロード
+        window.onload = loadAndProcessData;
+    </script>
+</body>
+</html>
