@@ -23,6 +23,11 @@ gt_list_array.forEach(item => {
 const externalUrl = 'https://gitlab.com/godfat/battle-cats-rolls/-/raw/master/build/bc-jp.yaml';
 
 async function createCatsJs(data) {
+    // update_events.js に追記 (例: runUpdate関数の最初)
+    const dataDir = path.join(__dirname, 'data');
+    if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir);
+    }
     try {
         const catsArray = Object.entries(data.cats).map(([id, catData]) => ({
             id: parseInt(id, 10),
