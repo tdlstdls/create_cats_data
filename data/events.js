@@ -4674,4 +4674,4 @@ const events = [
     "uber": 500,
     "legend": 30
   }
-];
+]
