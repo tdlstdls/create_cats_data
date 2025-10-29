@@ -4657,6 +4657,16 @@ const events = [
     "legend": 30
   },
   {
+    "key": "2025-10-31_1016",
+    "id": 1016,
+    "name": "ギャルズモンスターズ",
+    "rare": 6970,
+    "supa": 2500,
+    "uber": 500,
+    "legend": 30,
+    "guaranteed": true
+  },
+  {
     "key": "2025-10-03_1017",
     "id": 1017,
     "name": "ストリートファイター BLUE TEAM",
